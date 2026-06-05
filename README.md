@@ -1,5 +1,108 @@
 # Pull, Otimização e Avaliação de Prompts com LangChain e LangSmith
 
+> ℹ️ **A documentação da minha resolução está logo abaixo, na seção [📌 Resolução do Desafio](#-resolução-do-desafio).** O restante do arquivo é o enunciado original do desafio.
+
+---
+
+# 📌 Resolução do Desafio
+
+Autor: **Wesley Taumaturgo** · Username LangSmith Hub: **wesleytaumaturgo**
+
+- 🔗 **Prompt otimizado (público) no LangSmith Hub:** https://smith.langchain.com/hub/wesleytaumaturgo/bug_to_user_story_v2
+- 🔗 **Prompt base (ruim):** `leonanluppi/bug_to_user_story_v1`
+- 🔗 **Projeto/dataset no LangSmith:** https://smith.langchain.com/  → projeto `prompt-optimization-challenge` (dataset `*-eval`, 15 exemplos; avaliação roda nos 10 primeiros)
+- 🖼️ Screenshots em [`docs/`](docs/) (avaliações e tracing de 3 exemplos).
+
+## A) Técnicas Aplicadas (Fase 2)
+
+O prompt `prompts/bug_to_user_story_v2.yml` aplica **4 técnicas** combinadas (a lista também está em `techniques_applied` no YAML):
+
+| Técnica | Por que escolhi | Como apliquei (exemplo) |
+|---|---|---|
+| **Role Prompting** | Dar persona e contexto especializado eleva o nível e a consistência da saída. | *"Você é um Product Manager Sênior e Analista de Requisitos Ágeis..."* |
+| **Few-shot Learning** | Exemplos de entrada→saída ensinam o formato exato esperado (persona + Gherkin) melhor que qualquer descrição. | 3 exemplos (validação, compatibilidade de navegador, bug médio) que espelham o estilo do `reference`, sem copiá-lo (evita leakage). |
+| **Chain of Thought** | A tarefa exige raciocínio (identificar persona, valor e complexidade) antes de escrever. | Passos de raciocínio **internos** ("NÃO inclua na resposta") para não poluir a saída e preservar a Clareza. |
+| **Skeleton of Thought** | O formato muda conforme a complexidade (simples / médio / complexo). Montar o "esqueleto" das seções antes de preencher mantém a estrutura correta. | Regras de seções por complexidade: simples = só Critérios; médio = + "Contexto Técnico:"; complexo = seções `=== ... ===` + Tasks. |
+
+Boas práticas adicionais do enunciado também aplicadas: **System vs User Prompt** separados (instruções no system, `{bug_report}` no human), **regras explícitas de comportamento**, **tratamento de edge cases** e proibição de alucinação.
+
+## B) Resultados Finais
+
+> ⚠️ **Transparência (e um achado de engenharia relevante):** com os modelos modernos recomendados, **não foi possível atingir 0.90** de forma confiável, e o prompt otimizado (v2) **empata** com o prompt ruim (v1). A explicação e os dados estão abaixo — preferi documentar o resultado real a apresentar números inflados.
+
+**Fórmula da média (derivada do `evaluate.py`):** `média = 0.3·Clarity + 0.4·Precision + 0.3·F1`
+(pois `Helpfulness = (Clarity+Precision)/2` e `Correctness = (F1+Precision)/2`).
+
+### B.1 — Config recomendada: gerador forte `gpt-4o-mini` + juiz `gpt-4o`
+
+| Métrica | v1 (ruim) | v2 (otimizado) |
+|---|---|---|
+| Helpfulness | 0.88 | 0.86 |
+| Correctness | 0.81 | 0.77 |
+| F1-Score | 0.74 | 0.72 |
+| Clarity | 0.88 | 0.89 |
+| Precision | 0.89 | 0.83 |
+| **MÉDIA** | **0.8393** | **0.8128** (faixa 0.81–0.85 entre rodadas) |
+
+**Conclusão:** v1 e v2 são **estatisticamente indistinguíveis** dentro do ruído do juiz. O `gpt-4o-mini` é forte o bastante para gerar boas User Stories **mesmo a partir do prompt ruim**, e o juiz `gpt-4o` é leniente e ruidoso (piso ~0.84, teto ~0.85; variação de até ±0.16 por exemplo entre rodadas idênticas). A premissa do desafio (v1 ≈ 0.4–0.6, v2 ≥ 0.9) foi calibrada para **modelos mais fracos**.
+
+**Por que 0.90 é inatingível aqui:** mesmo com **Precision = 1.0**, com Clarity ≈ 0.89 e F1 ≈ 0.77, a média chega a `0.3·0.89 + 0.4·1.0 + 0.3·0.77 = 0.898 < 0.90`. O gargalo é o juiz de **F1 (recall)**, que pontua ~0.58–0.77 mesmo para saídas quase idênticas ao `reference` — e `metrics.py`/`evaluate.py` não podem ser alterados.
+
+### B.2 — Experimento controlado: gerador fraco `gpt-3.5-turbo` + juiz `gpt-4o`
+
+Para isolar o **valor do prompt engineering**, troquei o gerador por um modelo mais fraco (mesmo gerador e juiz para v1 e v2). Aí o ganho do v2 aparece de forma **consistente** (3 rodadas):
+
+| Métrica (média de 3 rodadas) | v1 (ruim) | v2 (otimizado) | Δ |
+|---|---|---|---|
+| **MÉDIA GERAL** | **0.7371** | **0.7576** | **+0.020** |
+| Rodada 1 | 0.7320 | 0.7583 | +0.026 |
+| Rodada 2 | 0.7423 | 0.7541 | +0.012 |
+| Rodada 3 | 0.7370 | 0.7605 | +0.024 |
+
+Na rodada detalhada, **o v2 venceu o v1 em todas as 5 métricas**. **Achado principal:** o valor da otimização de prompt é **maior quanto mais fraco o modelo**; com LLMs fortes, a engenharia de prompt tem retorno marginal decrescente nesta tarefa.
+
+### Processo de iteração (resumo)
+
+| Iteração | Mudança principal | Média (gpt-4o-mini) |
+|---|---|---|
+| v2 inicial | Role + Few-shot + CoT + Skeleton of Thought | 0.8456 |
+| 2 | +critérios extras (especulativos) | 0.8243 (Precision caiu) |
+| 3 | grounding + seções por complexidade | 0.8153 |
+| 4 | few-shot alinhado ao estilo do reference | 0.8325 |
+| 5 ✅ | classificação de complexidade (contar problemas) | ~0.82 (**versão final**) |
+| 6 | foco extremo em concisão | 0.79 (regrediu — desfeita) |
+
+A iteração 5 é a versão final: melhor qualidade estrutural (seções corretas por complexidade, critérios fundamentados, few-shot alinhado).
+
+## C) Como Executar
+
+```bash
+# 1. Ambiente
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+
+# 2. Credenciais — copie e preencha o .env (NÃO commitar)
+cp .env.example .env
+#   LANGSMITH_API_KEY, USERNAME_LANGSMITH_HUB, OPENAI_API_KEY (ou GOOGLE_API_KEY)
+#   LLM_PROVIDER=openai · LLM_MODEL=gpt-4o-mini · EVAL_MODEL=gpt-4o
+
+# 3. Testes (offline, validam a estrutura do v2.yml)
+pytest tests/test_prompts.py -v        # 7 passam
+
+# 4. Pull do prompt base ruim do Hub  -> prompts/bug_to_user_story_v1.yml
+python src/pull_prompts.py
+
+# 5. Push do prompt otimizado (público) -> {username}/bug_to_user_story_v2
+python src/push_prompts.py
+
+# 6. Avaliação (puxa o v2 do Hub e roda as 5 métricas)
+python src/evaluate.py
+```
+
+**Pré-requisitos:** Python 3.9+, conta LangSmith (API key) e chave de um provider (OpenAI ou Google Gemini). Atenção: o free tier do `gemini-2.5-flash` é de apenas **20 requisições/dia**, insuficiente para uma rodada de avaliação (~40 chamadas) — por isso usei OpenAI.
+
+---
+
 ## Objetivo
 
 Você deve entregar um software capaz de:
